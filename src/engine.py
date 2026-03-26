@@ -25,107 +25,88 @@ def initialize_ee():
 def get_gee_data(city_name: str, lon: float, lat: float):
     initialize_ee()
     try:
-        # 1. GEOMETRY: 25km for high-res stats, 50km for regional trend stability
         point = ee.Geometry.Point([lon, lat])
-        geometry = point.buffer(25000).bounds()
+        geometry = point.buffer(20000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
         # ═════════════════════════════════════════════════════════════
-        # LAYER 1 — MODIS 22-YEAR TREND (1km Scale)
+        # LAYER 1 — MODIS 22-YEAR TREND (Regional Scale)
         # ═════════════════════════════════════════════════════════════
         years = ee.List.sequence(2003, 2025)
         
         def process_modis(y):
             y = ee.Number(y)
             start = ee.Date.fromYMD(y, 6, 1)
-            # Filter for Summer (June - Sept)
-            col = ee.ImageCollection('MODIS/061/MYD11A2') \
+            img = ee.ImageCollection('MODIS/061/MYD11A2') \
                 .filterBounds(regional_geo) \
                 .filterDate(start, start.advance(4, 'month')) \
-                .select('LST_Day_1km')
+                .select('LST_Day_1km').mean()
             
-            # Using Mean to fill gaps in coastal pixels
-            img = col.mean()
-            
-            # Formula: (K * 0.02 - 273.15) * 1.8 + 32
             lst_f = img.multiply(0.02).subtract(273.15).multiply(1.8).add(32)
             year_band = ee.Image.constant(y.subtract(2013)).rename('year').toFloat()
-            
-            # Validity Check: Does the image have actual data pixels?
-            has_data = img.mask().reduceRegion(
-                reducer=ee.Reducer.anyNonZero(),
-                geometry=regional_geo,
-                scale=1000
-            ).values().contains(1)
-            
-            return lst_f.addBands(year_band).set('has_data', has_data)
+            # Safety: Tag images that actually have bands
+            return lst_f.addBands(year_band).set('has_data', img.bandNames().size().gt(0))
 
-        modis_annual = ee.ImageCollection(years.map(process_modis)) \
-            .filter(ee.Filter.eq('has_data', True))
+        modis_annual = ee.ImageCollection(years.map(process_modis)).filter(ee.Filter.eq('has_data', True))
 
-        # Robust Regression for the Slope (Fahrenheit change per year)
-        col_size = modis_annual.size().getInfo()
-        if col_size > 5:
-            sen_reg = modis_annual.select(['year', 'LST_Day_1km']) \
-                .reduce(ee.Reducer.robustLinearRegression(1, 1))
-            sen_slope_f = sen_reg.select('coefficients') \
-                .arrayProject([0]).arrayFlatten([['slope']])
+        if modis_annual.size().getInfo() > 5:
+            sen_reg = modis_annual.select(['year', 'LST_Day_1km']).reduce(ee.Reducer.robustLinearRegression(1, 1))
+            sen_slope_f = sen_reg.select('coefficients').arrayProject([0]).arrayFlatten([['slope']])
         else:
-            sen_slope_f = ee.Image.constant(0.05).rename('slope') # Default global avg fallback
+            sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
         # ═════════════════════════════════════════════════════════════
-        # LAYER 2 — LANDSAT 30m BASELINE (Neighborhood Scale)
+        # LAYER 2 — LANDSAT 30m BASELINE (5-Year Multi-Sensor)
         # ═════════════════════════════════════════════════════════════
-        def get_landsat_composite(y_list):
-            col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
-                .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
-                .filterBounds(geometry) \
-                .filter(ee.Filter.calendarRange(6, 9, 'month')) \
-                .filter(ee.Filter.inList('year', y_list)) \
-                .filter(ee.Filter.lt('CLOUD_COVER', 40))
+        ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
+            .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
+            .filterBounds(geometry) \
+            .filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
+            .filter(ee.Filter.calendarRange(6, 9, 'month')) \
+            .filter(ee.Filter.lt('CLOUD_COVER', 50))
             
-            def prep_landsat(img):
-                qa = img.select('QA_PIXEL')
-                # Earth Engine .And() is required here
-                mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 4).eq(0))
-                lst = img.select('ST_B10').multiply(0.00341802).add(149)\
-                         .subtract(273.15).multiply(1.8).add(32)
-                return lst.updateMask(mask).rename('LST_F')
+        def prep_ls(img):
+            qa = img.select('QA_PIXEL')
+            # Standard Land Surface Temperature (LST) Masking
+            mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 4).eq(0))
+            lst = img.select('ST_B10').multiply(0.00341802).add(149).subtract(273.15).multiply(1.8).add(32)
+            return lst.updateMask(mask).rename('AVG_LST_F')
 
-            return col.map(prep_landsat).median()
+        # Generate Median Composite
+        avg_lst_f = ls_col.map(prep_ls).median()
 
-        # Create a 3-year median baseline (2022-2024)
-        avg_lst_f = get_landsat_composite([2022, 2023, 2024]).rename('AVG_LST_F')
+        # 🛡️ THE BAND GUARD: Prevents the "0 vs 1 bands" Addition Error
+        band_count = avg_lst_f.bandNames().size().getInfo()
+        
+        if band_count == 0:
+            # Fallback: Use MODIS current mean if Landsat is 100% cloudy/empty
+            avg_lst_f = modis_annual.select('LST_Day_1km').mean().rename('AVG_LST_F').clip(geometry)
+            st.warning(f"Note: Using MODIS fallback for {city_name} baseline due to Landsat cloud cover.")
 
         # ═════════════════════════════════════════════════════════════
-        # PREDICTION & STATISTICS
+        # PREDICTION ENGINE (Re-aligning Pixels)
         # ═════════════════════════════════════════════════════════════
-        # 2026 Forecast = Baseline + (Slope * 2 Years since 2024)
-        pred_2026_f = avg_lst_f.add(sen_slope_f.resample('bilinear').multiply(2)).clip(geometry)
+        # Reproject ensures the 1km MODIS slope matches the 30m Landsat grid
+        slope_resampled = sen_slope_f.resample('bilinear').reproject(crs='EPSG:4326', scale=30)
+        
+        # 2026 Forecast (2 years gain from 2024 median)
+        pred_2026_f = avg_lst_f.add(slope_resampled.multiply(2)).clip(geometry)
 
-        # Extract numerical results for Streamlit Metrics
+        # Extraction for Metrics
         stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
-        slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), geometry, 1000).getInfo()
+        slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), regional_geo, 1000).getInfo()
 
-        # Handle potential None values from GEE
-        mean_val = stats_raw.get('AVG_LST_F', 0) if stats_raw else 0
-        slope_val = slope_raw.get('slope', 0) if slope_raw else 0
+        m_val = stats_raw.get('AVG_LST_F', 0) if stats_raw else 0
+        s_val = slope_raw.get('slope', 0) if slope_raw else 0
 
         stats = {
-            "mean_temp_f": round(float(mean_val), 2),
-            "warming_trend": round(float(slope_val), 4),
-            "pred_2026_f": round(float(mean_val + (slope_val * 2)), 2)
+            "mean_temp_f": round(float(m_val), 2),
+            "warming_trend": round(float(s_val), 4),
+            "pred_2026_f": round(float(m_val + (s_val * 2)), 2)
         }
         
-        # Visual parameters for the thumbnail
-        vis_params = {
-            "min": 85, "max": 115, 
-            "palette": ['blue', 'yellow', 'red'], 
-            "region": geometry, 
-            "dimensions": 512
-        }
-        
-        return geometry, avg_lst_f, pred_2026_f, stats, pred_2026_f.getThumbURL(vis_params)
+        vis = {"min": 85, "max": 115, "palette": ['blue', 'yellow', 'red'], "region": geometry, "dimensions": 512}
+        return geometry, avg_lst_f, pred_2026_f, stats, pred_2026_f.getThumbURL(vis)
 
     except Exception as e:
         st.error(f"Engine Core Error: {e}")
