@@ -1,3 +1,7 @@
+# Add this at the top
+setuptools
+
+# Keep your other dependencies (pinned for stability)
 google-genai>=0.3.0
 earthengine-api>=1.1.0
 geemap==0.34.3
