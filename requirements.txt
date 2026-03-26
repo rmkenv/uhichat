@@ -3,3 +3,4 @@ earthengine-api==0.1.390
 geemap==0.32.1
 streamlit==1.32.0
 python-dotenv==1.0.1
+pillow
