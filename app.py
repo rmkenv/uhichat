@@ -1,3 +1,6 @@
+
+import setuptools # Force it to load first
+import pkg_resources # Test if it's available
 import streamlit as st
 import geemap
 from geopy.geocoders import Nominatim
