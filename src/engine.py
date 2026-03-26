@@ -33,16 +33,17 @@ def initialize_ee():
 
 def get_gee_data(city_name: str, lon: float, lat: float):
     """
-    Analyzes climate trends using a robust median-pixel strategy 
-    to bypass persistent cloud cover in coastal cities.
+    Analyzes climate trends using Terra (Morning) satellite data to bypass 
+    afternoon haze and coastal cloud masking.
     """
     initialize_ee()
     try:
-        # 1. Define Area of Interest (Expanded to 10km for better data capture)
-        aoi = ee.Geometry.Point([lon, lat]).buffer(10000).bounds()
+        # 1. Define Area of Interest (Expanded to 15km for urban/coastal resilience)
+        aoi = ee.Geometry.Point([lon, lat]).buffer(15000).bounds()
 
-        # 2. Dynamic Date Detection
-        latest_img = ee.ImageCollection("MODIS/061/MYD11A2") \
+        # 2. Dynamic Date Detection using Terra (MOD11A2)
+        # Terra has better morning clarity for coastal cities like NYC.
+        latest_img = ee.ImageCollection("MODIS/061/MOD11A2") \
             .limit(1, "system:time_start", False).first()
         
         last_year = ee.Date(latest_img.get("system:time_start")).get("year").getInfo()
@@ -51,11 +52,11 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         years = ee.List.sequence(start_year, last_year)
         
         def process_modis_year(y):
-            # FIXED: Broadened window (April-Sept) to ensure we find clear pixels
+            # Window: April to September (captures the full thermal cycle)
             start = ee.Date.fromYMD(y, 4, 1)
             
-            # FIXED: Using .median() instead of .mean() to filter out cloud noise
-            img = ee.ImageCollection("MODIS/061/MYD11A2") \
+            # Use Terra (MOD) instead of Aqua (MYD) for clearer morning pixels
+            img = ee.ImageCollection("MODIS/061/MOD11A2") \
                 .filterBounds(aoi) \
                 .filterDate(start, start.advance(5, "month")) \
                 .select("LST_Day_1km") \
@@ -79,11 +80,12 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         trend = trend_images.reduce(ee.Reducer.sensSlope()).select("slope")
 
         # 4. Current High-Res (Landsat 8/9)
+        # Landsat also passes in the morning, making it compatible with Terra trends
         landsat_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
             .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(aoi) \
             .filterDate("2023-01-01", "2027-01-01") \
-            .filter(ee.Filter.lt("CLOUD_COVER", 50)) # Higher tolerance for high-res
+            .filter(ee.Filter.lt("CLOUD_COVER", 50)) 
 
         if landsat_col.size().getInfo() == 0:
             st.warning(f"No clear Landsat images found for {city_name} (2023-2026).")
