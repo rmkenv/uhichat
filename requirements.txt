@@ -1,13 +1,7 @@
-# This provides the missing pkg_resources
-setuptools
-
-# The core AI and Mapping libraries
+# Modern Earth Engine & AI
 google-genai>=0.3.0
 earthengine-api>=1.1.0
-geemap==0.34.3
-
-# Pinned for stability on Python 3.11
-python-box==6.1.0
+leafmap>=0.30.0
 streamlit>=1.32.0
 
 # Helpers
