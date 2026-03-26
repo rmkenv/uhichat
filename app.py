@@ -1,5 +1,5 @@
 import streamlit as st
-import geemap.foliumap as geemap
+import geemap
 from geopy.geocoders import Nominatim
 from google.genai import client
 from src.engine import get_gee_data, initialize_ee
