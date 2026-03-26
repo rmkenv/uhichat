@@ -4,112 +4,102 @@ import leafmap
 from google.oauth2 import service_account
 
 def clean_pem_key(key):
-    """
-    Standardizes the PEM key to prevent 'InvalidByte' errors during decryption.
-    """
-    if not key:
-        return None
-    
-    # 1. Fix literal '\n' text strings often found in JSON/TOML pastes
+    """Fixes 'InvalidByte' errors by cleaning and rebuilding the PEM key."""
+    if not key: return None
     key = key.replace("\\n", "\n").strip()
-    
     header = "-----BEGIN PRIVATE KEY-----"
     footer = "-----END PRIVATE KEY-----"
-    
-    # 2. Rebuild the key perfectly to ensure no missing/extra characters at boundaries
-    inner_content = key.replace(header, "").replace(footer, "").strip()
-    return f"{header}\n{inner_content}\n{footer}\n"
+    inner = key.replace(header, "").replace(footer, "").strip()
+    return f"{header}\n{inner}\n{footer}\n"
 
 def initialize_ee():
-    """
-    Initializes Earth Engine with explicit scopes and robust secret handling.
-    """
-    # Skip if already initialized (improves performance)
-    if ee.data.is_initialized():
-        return 
+    """Initializes EE with explicit scopes to fix 'invalid_scope' errors."""
+    if ee.data.is_initialized(): return 
 
     try:
-        if "gee_service_account" not in st.secrets:
-            st.error("Missing 'gee_service_account' in Streamlit Secrets!")
-            st.stop()
-        
         sa_info = dict(st.secrets["gee_service_account"])
-        
-        # FIX: 'invalid_scope' error by explicitly requesting EE access
         ee_scopes = ['https://www.googleapis.com/auth/earthengine']
-        
-        # FIX: 'InvalidByte' error by cleaning the key
         sa_info["private_key"] = clean_pem_key(sa_info["private_key"])
         
-        # Create credentials with explicit scopes
         credentials = service_account.Credentials.from_service_account_info(
-            sa_info, 
-            scopes=ee_scopes
+            sa_info, scopes=ee_scopes
         )
         
-        # Initialize with Project ID from secrets or service account
         project_id = st.secrets.get("GCP_PROJECT_ID") or sa_info.get("project_id")
         ee.Initialize(credentials=credentials, project=project_id)
-        
     except Exception as e:
-        st.error(f"Failed to initialize Earth Engine: {e}")
+        st.error(f"Earth Engine Auth Failed: {e}")
         st.stop()
 
 def get_gee_data(city_name: str, lon: float, lat: float):
-    """
-    Performs geospatial analysis for current and future thermal trends.
-    """
+    """Analyzes climate trends while strictly preventing 'No Bands' math errors."""
     initialize_ee()
-
     try:
-        # 1. Define Area of Interest (5km radius buffer)
+        # 1. Define AOI (5km buffer)
         aoi = ee.Geometry.Point([lon, lat]).buffer(5000).bounds()
 
-        # 2. Historical Trend (MODIS LST 1km, 2003–2026)
-        # We use MODIS for the trend because it has a consistent 20+ year daily record
+        # 2. Historical Trend (MODIS 2003–2026)
+        # We must filter out years with zero data before calculating the slope
         years = ee.List.sequence(2003, 2026)
         
-        def calculate_annual_temp(y):
-            start = ee.Date.fromYMD(y, 6, 1) # Target Summer (June-Aug)
-            return ee.ImageCollection("MODIS/061/MYD11A2") \
+        def process_modis_year(y):
+            start = ee.Date.fromYMD(y, 6, 1)
+            img = ee.ImageCollection("MODIS/061/MYD11A2") \
                 .filterBounds(aoi) \
                 .filterDate(start, start.advance(3, "month")) \
-                .select("LST_Day_1km").mean() \
-                .multiply(0.02).subtract(273.15).multiply(1.8).add(32) \
-                .set("year", y)
+                .select("LST_Day_1km").mean()
+            
+            # Metadata tag: does this year actually have a band to multiply?
+            return img.set("year", y).set("has_data", img.bandNames().size().gt(0))
 
-        modis_col = ee.ImageCollection(years.map(calculate_annual_temp))
-        trend = modis_col.reduce(ee.Reducer.sensSlope()).select("slope")
+        # Filter the collection to REMOVE empty years before reducing
+        modis_col = ee.ImageCollection(years.map(process_modis_year)) \
+            .filter(ee.Filter.eq("has_data", True))
 
-        # 3. Current High-Res Baseline (Landsat 8/9, 30m)
+        # Logic Guard: Need at least 2 points to draw a trend line
+        if modis_col.size().getInfo() < 2:
+            st.warning(f"Insufficient historical data for {city_name} to calculate trends.")
+            return None, None, None, None, None
+
+        # Convert MODIS to Fahrenheit ONLY for valid images
+        trend_images = modis_col.map(lambda img: 
+            img.multiply(0.02).subtract(273.15).multiply(1.8).add(32))
+        
+        # Calculate Sens Slope (warming trend)
+        trend = trend_images.reduce(ee.Reducer.sensSlope()).select("slope")
+
+        # 3. Current High-Res (Landsat 8/9, 30m)
         landsat_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
             .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(aoi) \
             .filterDate("2023-01-01", "2026-12-31") \
-            .filter(ee.Filter.lt("CLOUD_COVER", 35)) # Loosened for data availability
+            .filter(ee.Filter.lt("CLOUD_COVER", 45)) # High tolerance for hazy regions
 
-        # FIX: 'Image.multiply' 0 bands error by checking if collection is empty
+        # FIX: The 'Got 0 and 1' error guard
         if landsat_col.size().getInfo() == 0:
-            st.warning(f"⚠️ No clear satellite imagery found for {city_name} in current window.")
+            st.warning(f"No clear Landsat images found for {city_name} (2023-2026).")
             return None, None, None, None, None
 
-        current_lst = landsat_col.median() \
-            .select("ST_B10").multiply(0.00341802).add(149).subtract(273.15).multiply(1.8).add(32) \
-            .clip(aoi)
+        # Process the median image safely
+        current_lst = landsat_col.median().select("ST_B10") \
+            .multiply(0.00341802).add(149).subtract(273.15).multiply(1.8).add(32).clip(aoi)
 
-        # 4. 2030 Prediction (Current + (Trend * 4 Years))
+        # 4. 2030 Prediction (Trend extrapolated 4 years from now)
         forecast_2030 = current_lst.add(trend.resample("bilinear").multiply(4)).rename("ST_B10")
 
-        # 5. Extract Stats for Gemini Analysis
-        # Note: resample trend to match Landsat 30m resolution for processing
+        # 5. Extract Stats with 'None' safety
+        # We fetch the dictionary and provide defaults if a region is unmasked
+        raw_stats = current_lst.reduceRegion(ee.Reducer.mean(), aoi, 30).getInfo()
+        mean_val = raw_stats.get("ST_B10") if raw_stats else 0
+        
         stats = {
             "city": city_name,
-            "mean_temp_f": round(float(current_lst.reduceRegion(ee.Reducer.mean(), aoi, 30).getInfo().get("ST_B10")), 2),
-            "warming_trend": round(float(trend.reduceRegion(ee.Reducer.mean(), aoi, 1000).getInfo().get("slope")), 4),
-            "max_hotspot_f": round(float(current_lst.reduceRegion(ee.Reducer.max(), aoi, 30).getInfo().get("ST_B10")), 2),
+            "mean_temp_f": round(float(mean_val), 2) if mean_val else 0.0,
+            "warming_trend": round(float(trend.reduceRegion(ee.Reducer.mean(), aoi, 1000).getInfo().get("slope", 0)), 4),
+            "max_hotspot_f": round(float(current_lst.reduceRegion(ee.Reducer.max(), aoi, 30).getInfo().get("ST_B10", 0)), 2),
         }
 
-        # 6. Generate thumbnail for Gemini Vision context
+        # 6. Generate Thumbnail for Gemini Vision
         vis = {"min": 80, "max": 115, "palette": ["blue", "yellow", "red"], "dimensions": 512, "region": aoi}
         thumb_url = current_lst.getThumbURL(vis)
 
