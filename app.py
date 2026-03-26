@@ -1,154 +1,90 @@
 import streamlit as st
-import leafmap.foliumap as lm
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
-from geopy.exc import GeocoderRateLimited, GeocoderServiceError
-from google.genai import client
-import random
+import pandas as pd
+import leafmap.foliumap as leafmap
+from src.engine import get_gee_data
 
-# Internal logic imports
-from src.engine import get_gee_data, initialize_ee
-from src.agent import ask_gemini
+# 1. PAGE CONFIG
+st.set_page_config(page_title="Urban Heat Agent 2026", layout="wide", page_icon="🔥")
 
-# 1. Hard-coded Top 25 Cities (Latitude, Longitude)
-# This prevents 429 errors and provides instant results for major hubs.
-TOP_CITIES = {
-    "New York, NY": (40.7128, -74.0060),
-    "Los Angeles, CA": (34.0522, -118.2437),
-    "Chicago, IL": (41.8781, -87.6298),
-    "Houston, TX": (29.7604, -95.3698),
-    "Phoenix, AZ": (33.4484, -112.0740),
-    "Philadelphia, PA": (39.9526, -75.1652),
-    "San Antonio, TX": (29.4241, -98.4936),
-    "San Diego, CA": (32.7157, -117.1611),
-    "Dallas, TX": (32.7767, -96.7970),
-    "San Jose, CA": (37.3382, -121.8863),
-    "Austin, TX": (30.2672, -97.7431),
-    "Jacksonville, FL": (30.3322, -81.6557),
-    "Fort Worth, TX": (32.7555, -97.3308),
-    "Columbus, OH": (39.9612, -82.9988),
-    "Charlotte, NC": (35.2271, -80.8431),
-    "San Francisco, CA": (37.7749, -122.4194),
-    "Indianapolis, IN": (39.7684, -86.1581),
-    "Seattle, WA": (47.6062, -122.3321),
-    "Denver, CO": (39.7392, -104.9903),
-    "Washington, DC": (38.9072, -77.0369),
-    "Boston, MA": (42.3601, -71.0589),
-    "El Paso, TX": (31.7619, -106.4850),
-    "Nashville, TN": (36.1627, -86.7816),
-    "Detroit, MI": (42.3314, -83.0458),
-    "Oklahoma City, OK": (35.4676, -97.5164)
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; border: 1px solid #e0e6ed; }
+    </style>
+    """, unsafe_content_as_none=True)
+
+# 2. SIDEBAR & CITY CONFIG
+st.sidebar.title("🏙️ Urban Heat Agent")
+st.sidebar.info("Two-Layer Analysis: MODIS (22-yr Trend) + Landsat (30m Baseline)")
+
+# Hardcoded Cities from your GEE Logic
+CITIES = {
+    "Atlanta, GA": {"lat": 33.7490, "lon": -84.3880},
+    "New York, NY": {"lat": 40.7128, "lon": -74.0060},
+    "Phoenix, AZ": {"lat": 33.4484, "lon": -112.0740},
+    "Chicago, IL": {"lat": 41.8781, "lon": -87.6298},
+    "Los Angeles, CA": {"lat": 34.0522, "lon": -118.2437}
 }
 
-# 2. Page Configuration
-st.set_page_config(
-    page_title="Climate Intelligence Agent",
-    page_icon="🌍",
-    layout="wide"
-)
+selected_city = st.sidebar.selectbox("Select Target City", list(CITIES.keys()))
+city_coords = CITIES[selected_city]
 
-st.title("🌍 Gemini 3 Climate Intelligence")
-st.markdown("---")
+# 3. DATA PROCESSING
+with st.spinner(f"Analyzing {selected_city} (22-year historical stack)..."):
+    geometry, current_lst, forecast_2030, stats, thumb_url = get_gee_data(
+        selected_city, city_coords["lon"], city_coords["lat"]
+    )
 
-# 3. Initialize Services
-initialize_ee()
-if "gemini_client" not in st.session_state:
-    st.session_state.gemini_client = client.Client(api_key=st.secrets["GEMINI_API_KEY"])
-
-# 4. Sidebar UI
-with st.sidebar:
-    st.header("🔍 Analysis Settings")
+if stats:
+    # 4. DASHBOARD LAYOUT
+    col1, col2, col3, col4 = st.columns(4)
     
-    # Selection Mode
-    city_choice = st.selectbox("Select a City", list(TOP_CITIES.keys()) + ["Search Other..."])
-    
-    # Conditional text input if "Search Other" is selected
-    if city_choice == "Search Other...":
-        target_city = st.text_input("Enter City, State/Country", "")
-    else:
-        target_city = city_choice
-    
-    st.info("""
-    **Satellite Sources:**
-    * MODIS (20-year Thermal Trends)
-    * Landsat 8/9 (30m High-Res)
-    * Gemini 3 (Predictive Analysis)
-    """)
-    
-    run_analysis = st.button("Generate Intelligence Report", type="primary")
+    with col1:
+        st.metric("Avg Surface Temp", f"{stats['mean_temp_f']}°F", delta="Current Baseline")
+    with col2:
+        st.metric("22-Yr Warming Rate", f"{stats['warming_trend']}°F/yr", delta="Statistically Significant", delta_color="inverse")
+    with col3:
+        # SUHI Metric (Heat Burden above green baseline)
+        st.metric("Urban Heat Intensity", f"+{stats['suhi_intensity']}°F", help="How much hotter the city core is compared to surrounding parks/trees.")
+    with col4:
+        st.metric("2026 Prediction", f"{stats['pred_2026_f']}°F", delta=f"{round(stats['pred_2026_f'] - stats['mean_temp_f'], 2)}°F Gain")
 
-# 5. Main Layout
-col_map, col_ai = st.columns([1.5, 1])
+    st.divider()
 
-if run_analysis and target_city:
-    with st.spinner(f"📡 Accessing orbital data for {target_city}..."):
+    # 5. INTERACTIVE MAP
+    m_col, d_col = st.columns([2, 1])
+
+    with m_col:
+        st.subheader(f"Neighborhood Heat Mapping: {selected_city}")
+        m = leafmap.Map(center=[city_coords["lat"], city_coords["lon"]], zoom=12)
+        m.add_basemap("SATELLITE")
         
-        # --- HYBRID GEOLOCATION LOGIC ---
-        location_coords = None
+        # Add GEE Layers with your custom Palette
+        vis_params = {"min": 85, "max": 115, "palette": ['040274','307ef3','3be285','fff705','ff8b13','de0101']}
         
-        if target_city in TOP_CITIES:
-            # INSTANT LOOKUP (No API Call)
-            lat, lon = TOP_CITIES[target_city]
-            # Mock the geopy object structure
-            location_coords = type('Location', (object,), {'latitude': lat, 'longitude': lon})
-        else:
-            # FALLBACK TO GEOPY (Rate-Limited API Call)
-            try:
-                unique_agent = f"climate_agent_rel_{random.randint(1000, 9999)}"
-                geolocator = Nominatim(user_agent=unique_agent)
-                # Ensure we don't spam OSM servers
-                geocode_service = RateLimiter(geolocator.geocode, min_delay_seconds=1.5, max_retries=2)
-                location_coords = geocode_service(target_city)
-            except Exception:
-                location_coords = None
+        m.add_ee_layer(current_lst, vis_params, "Current Surface Temp (30m)")
+        m.add_ee_layer(forecast_2030, vis_params, "Predicted 2026 Temp (30m)")
+        
+        m.to_streamlit(height=600)
 
-        if location_coords:
-            # B. Execute Earth Engine Analysis
-            aoi, current_lst, forecast_2030, stats, thumb_url = get_gee_data(
-                target_city, 
-                location_coords.longitude, 
-                location_coords.latitude
-            )
-            
-            if aoi and stats:
-                # C. Display Interactive Map
-                with col_map:
-                    st.subheader(f"📍 Surface Temperature: {target_city}")
-                    m = lm.Map(center=[location_coords.latitude, location_coords.longitude], zoom=12)
-                    
-                    vis_params = {
-                        'min': 80, 
-                        'max': 115, 
-                        'palette': ['313695', '4575b4', 'abd9e9', 'ffffbf', 'fee090', 'f46d43', 'd73027', 'a50026']
-                    }
-                    
-                    m.add_ee_layer(current_lst, vis_params, 'Current Heat (2025)')
-                    m.add_ee_layer(forecast_2030, vis_params, '2030 Projection')
-                    m.add_layer_control()
-                    m.to_streamlit(height=650)
-                
-                # D. Display Gemini AI Insights
-                with col_ai:
-                    st.subheader("🤖 AI Climate Strategist")
-                    report = ask_gemini(
-                        st.session_state.gemini_client, 
-                        target_city, 
-                        stats, 
-                        thumb_url
-                    )
-                    st.markdown(report)
-                    
-                    st.divider()
-                    m1, m2 = st.columns(2)
-                    m1.metric("Mean Temp", f"{stats['mean_temp_f']:.1f}°F")
-                    m2.metric("Max Hotspot", f"{stats['max_hotspot_f']:.1f}°F")
-                    st.caption(f"Warming Trend: {stats['warming_trend']:.4f}°F / year")
-            else:
-                st.warning("Analysis could not be completed. Check for satellite coverage in this region.")
+    with d_col:
+        st.subheader("AI Insight Packet")
+        st.image(thumb_url, caption="Thermal Remote Sensing Thumbnail", use_column_width=True)
+        
+        st.write(f"**Analysis for {selected_city}:**")
+        st.write(f"The warming trend of **{stats['warming_trend']}°F/year** suggests a total surface gain of nearly **{round(stats['warming_trend'] * 10, 2)}°F** per decade.")
+        
+        if stats['suhi_intensity'] > 10:
+            st.error(f"⚠️ HIGH HEAT BURDEN: {selected_city} shows an Urban Heat Island intensity of {stats['suhi_intensity']}°F above its rural baseline. Immediate cooling interventions (cool roofs, greening) recommended.")
         else:
-            st.error("Location not found. Please check your spelling or try a major city.")
-            
+            st.success(f"✅ MODERATE HEAT BURDEN: {selected_city} maintains a cooling buffer from local green space.")
+
+        # Download Data Button
+        csv = pd.DataFrame([stats]).to_csv(index=False).encode('utf-8')
+        st.download_button("Download Analysis (CSV)", csv, f"{selected_city}_heat_report.csv", "text/csv")
+
 else:
-    with col_map:
-        st.info("👈 Select a location in the sidebar to begin.")
-        st.image("https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200")
+    st.error("Failed to retrieve satellite data. Please check Earth Engine permissions or AOI coverage.")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("Data: NASA/USGS Landsat 8/9 & MODIS Aqua (MYD11A2)")
