@@ -1,6 +1,11 @@
-google-genai==0.3.0
-earthengine-api==0.1.390
-geemap==0.32.1
-streamlit==1.32.0
-python-dotenv==1.0.1
-pillow
+# High-level AI and Cloud APIs
+google-genai>=0.3.0
+earthengine-api>=1.1.0
+
+# Geospatial and UI
+geemap>=0.34.0
+streamlit>=1.55.0
+python-dotenv>=1.0.1
+
+# Explicitly use a stable, pre-compiled image library
+Pillow>=11.0.0
