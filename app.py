@@ -1,11 +1,13 @@
 import streamlit as st
 import leafmap.foliumap as lm
 from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderUnavailable
+from geopy.extra.rate_limiter import RateLimiter
+from geopy.exc import GeocoderRateLimited, GeocoderServiceError
 from google.genai import client
-import os
+import time
+import random
 
-# Internal imports
+# Internal logic imports
 from src.engine import get_gee_data, initialize_ee
 from src.agent import ask_gemini
 
@@ -19,8 +21,7 @@ st.set_page_config(
 st.title("🌍 Gemini 3 Climate Intelligence")
 st.markdown("---")
 
-# 2. Initialize Earth Engine
-# This handles the PEM cleaning and Scopes we fixed in engine.py
+# 2. Initialize Earth Engine (Handles Auth & Scopes)
 initialize_ee()
 
 # 3. Initialize Gemini AI Client
@@ -45,22 +46,26 @@ with st.sidebar:
 col_map, col_ai = st.columns([1.5, 1])
 
 if run_analysis:
-    with st.spinner(f"📡 Locating {city_input} and fetching orbital data..."):
+    with st.spinner(f"📡 Requesting orbital data for {city_input}..."):
         
-        # --- FIX: Robust Geocoding with Timeout and Unique Agent ---
-        # Nominatim requires a unique user_agent to avoid being rate-limited
-        geolocator = Nominatim(user_agent="climate_intel_v2_streamlit_app")
+        # --- FIX: Rate-Limit Proof Geocoding ---
+        # We use a random ID in the user_agent to avoid 429 errors 
+        # shared by other apps on the same Streamlit Cloud IP.
+        random_id = random.randint(1000, 9999)
+        geolocator = Nominatim(user_agent=f"climate_agent_{random_id}")
+        
+        # The RateLimiter adds a 2-second buffer and 3 retries 
+        # to satisfy the free Nominatim usage policy.
+        geocode = RateLimiter(geolocator.geocode, min_delay_seconds=2, max_retries=3)
         
         try:
-            # Added 10s timeout to prevent GeocoderUnavailable on slow networks
-            location = geolocator.geocode(city_input, timeout=10)
-        except GeocoderUnavailable:
-            st.error("🌍 The geocoding service is temporarily busy. Please wait 10 seconds and try again.")
+            location = geocode(city_input)
+        except (GeocoderRateLimited, GeocoderServiceError):
+            st.error("🌍 The mapping service is overloaded (Error 429). Please wait 10 seconds and try again.")
             st.stop()
 
         if location:
-            # B. Execute Earth Engine Analysis
-            # This calls the 'Titanium-Grade' engine.py we built
+            # B. Execute Earth Engine Analysis (from engine.py)
             aoi, current_lst, forecast_2030, stats, thumb_url = get_gee_data(
                 city_input, 
                 location.longitude, 
@@ -75,7 +80,6 @@ if run_analysis:
                     # Initialize Map
                     m = lm.Map(center=[location.latitude, location.longitude], zoom=12)
                     
-                    # Detailed thermal palette
                     vis_params = {
                         'min': 80, 
                         'max': 115, 
@@ -93,7 +97,7 @@ if run_analysis:
                 with col_ai:
                     st.subheader("🤖 AI Climate Strategist")
                     
-                    # Generate the AI report using stats and the satellite thumbnail
+                    # Call Gemini with the thermal stats and the satellite thumbnail
                     report = ask_gemini(
                         st.session_state.gemini_client, 
                         city_input, 
@@ -103,21 +107,20 @@ if run_analysis:
                     
                     st.markdown(report)
                     
-                    # Metrics Dashboard
+                    # Dashboard Metrics
                     st.divider()
                     m1, m2 = st.columns(2)
-                    m1.metric("Mean Temp", f"{stats['mean_temp_f']}°F")
-                    m2.metric("Max Hotspot", f"{stats['max_hotspot_f']}°F")
+                    m1.metric("Mean Temp", f"{stats['mean_temp_f']:.1f}°F")
+                    m2.metric("Max Hotspot", f"{stats['max_hotspot_f']:.1f}°F")
                     
-                    st.caption(f"Warming Trend: {stats['warming_trend']}°F / year")
+                    st.caption(f"Warming Trend: {stats['warming_trend']:.4f}°F / year")
             else:
-                # This triggers if engine.py returned None due to empty satellite data
-                st.warning("Analysis could not be completed for this specific location.")
+                st.warning("Satellite data is currently unavailable for this specific coordinate.")
         else:
-            st.error("Location not found. Please try a more specific address (e.g., 'Phoenix, Arizona').")
+            st.error("Location not found. Please try a more specific address.")
             
 else:
     with col_map:
-        st.info("👈 Enter a location in the sidebar to begin.")
+        st.info("👈 Enter a location in the sidebar to begin the satellite analysis.")
         st.image("https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=1200", 
                  caption="Satellite-driven Climate Intelligence")
