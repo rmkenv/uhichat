@@ -1,3 +1,28 @@
+# CSS FIX: Explicitly set background AND text color for readability
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    
+    /* Target the Metric Containers */
+    [data-testid="stMetric"] {
+        background-color: #ffffff !important;
+        padding: 20px !important;
+        border-radius: 10px !important;
+        border: 1px solid #d1d5db !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    /* Force Label and Value text to be dark/readable */
+    [data-testid="stMetricLabel"] {
+        color: #374151 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stMetricValue"] {
+        color: #111827 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 import streamlit as st
 import pandas as pd
 import leafmap.foliumap as leafmap
