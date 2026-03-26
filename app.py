@@ -1,6 +1,6 @@
 import streamlit as st
 import ee
-import geemap.foliumap as geemap
+import geemap  # Change from 'import geemap.foliumap as geemap'
 from google.genai import client
 from src.engine import get_gee_data, initialize_ee
 from src.agent import ask_gemini
