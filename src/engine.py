@@ -1,4 +1,18 @@
 import ee
+import streamlit as st
+from google.oauth2 import service_account
+
+def initialize_ee():
+    if not ee.data.is_initialized():
+        # Get credentials from Streamlit Secrets
+        credentials_info = st.secrets["gee_service_account"]
+        credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        
+        # Initialize with the specific project and credentials
+        ee.Initialize(
+            credentials=credentials,
+            project=st.secrets["GCP_PROJECT_ID"]
+        )
 
 def get_gee_data(city_name):
     # Geocode and Buffer
