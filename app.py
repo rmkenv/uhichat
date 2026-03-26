@@ -1,6 +1,12 @@
-
-import setuptools # Force it to load first
-import pkg_resources # Test if it's available
+try:
+    import setuptools
+    import pkg_resources
+except ImportError:
+    import subprocess
+    import sys
+    # This forces the install AT RUNTIME if the requirements file failed
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools"])
+    import pkg_resources
 import streamlit as st
 import geemap
 from geopy.geocoders import Nominatim
