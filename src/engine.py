@@ -25,76 +25,108 @@ def initialize_ee():
 def get_gee_data(city_name: str, lon: float, lat: float):
     initialize_ee()
     try:
-        # Increase buffer slightly to 25km to ensure land pixel capture
-        geometry = ee.Geometry.Point([lon, lat]).buffer(25000).bounds()
+        # 1. GEOMETRY: 25km for high-res stats, 50km for regional trend stability
+        point = ee.Geometry.Point([lon, lat])
+        geometry = point.buffer(25000).bounds()
+        regional_geo = point.buffer(50000).bounds()
 
-        # --- LAYER 1: MODIS 22-YEAR TREND ---
-        years = ee.List.sequence(2003, 2024)
+        # ═════════════════════════════════════════════════════════════
+        # LAYER 1 — MODIS 22-YEAR TREND (1km Scale)
+        # ═════════════════════════════════════════════════════════════
+        years = ee.List.sequence(2003, 2025)
+        
         def process_modis(y):
             y = ee.Number(y)
-            # Expand window: May to October to ensure we get data
-            start = ee.Date.fromYMD(y, 5, 1)
-            img = ee.ImageCollection('MODIS/061/MYD11A2') \
-                .filterBounds(geometry) \
-                .filterDate(start, start.advance(5, 'month')) \
-                .select('LST_Day_1km').median() # Median is more robust than mean
+            start = ee.Date.fromYMD(y, 6, 1)
+            # Filter for Summer (June - Sept)
+            col = ee.ImageCollection('MODIS/061/MYD11A2') \
+                .filterBounds(regional_geo) \
+                .filterDate(start, start.advance(4, 'month')) \
+                .select('LST_Day_1km')
             
+            # Using Mean to fill gaps in coastal pixels
+            img = col.mean()
+            
+            # Formula: (K * 0.02 - 273.15) * 1.8 + 32
             lst_f = img.multiply(0.02).subtract(273.15).multiply(1.8).add(32)
             year_band = ee.Image.constant(y.subtract(2013)).rename('year').toFloat()
-            # Check if image actually has pixels
-            count = img.mask().reduceRegion(ee.Reducer.sum(), geometry, 1000).values().get(0)
-            return lst_f.addBands(year_band).set('has_data', ee.Number(count).gt(0))
+            
+            # Validity Check: Does the image have actual data pixels?
+            has_data = img.mask().reduceRegion(
+                reducer=ee.Reducer.anyNonZero(),
+                geometry=regional_geo,
+                scale=1000
+            ).values().contains(1)
+            
+            return lst_f.addBands(year_band).set('has_data', has_data)
 
-        modis_annual = ee.ImageCollection(years.map(process_modis)).filter(ee.Filter.eq('has_data', True))
-        
-        # SAFETY CHECK: Do we have at least 2 years for a regression?
+        modis_annual = ee.ImageCollection(years.map(process_modis)) \
+            .filter(ee.Filter.eq('has_data', True))
+
+        # Robust Regression for the Slope (Fahrenheit change per year)
         col_size = modis_annual.size().getInfo()
-        
-        if col_size >= 2:
-            sen_reg = modis_annual.select(['year', 'LST_Day_1km']).reduce(ee.Reducer.robustLinearRegression(1, 1))
-            sen_slope_f = sen_reg.select('coefficients').arrayProject([0]).arrayFlatten([['slope']])
+        if col_size > 5:
+            sen_reg = modis_annual.select(['year', 'LST_Day_1km']) \
+                .reduce(ee.Reducer.robustLinearRegression(1, 1))
+            sen_slope_f = sen_reg.select('coefficients') \
+                .arrayProject([0]).arrayFlatten([['slope']])
         else:
-            # Fallback to zero slope if data is missing
-            sen_slope_f = ee.Image.constant(0).rename('slope')
-            st.warning(f"Note: Limited historical MODIS data for {city_name}. Trend set to zero.")
+            sen_slope_f = ee.Image.constant(0.05).rename('slope') # Default global avg fallback
 
-        # --- LAYER 2: LANDSAT 30m BASELINE ---
-        def get_ls(y):
-            start = ee.Date.fromYMD(y, 6, 1)
-            col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
-                .filterBounds(geometry).filterDate(start, start.advance(4, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 40))
+        # ═════════════════════════════════════════════════════════════
+        # LAYER 2 — LANDSAT 30m BASELINE (Neighborhood Scale)
+        # ═════════════════════════════════════════════════════════════
+        def get_landsat_composite(y_list):
+            col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
+                .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
+                .filterBounds(geometry) \
+                .filter(ee.Filter.calendarRange(6, 9, 'month')) \
+                .filter(ee.Filter.inList('year', y_list)) \
+                .filter(ee.Filter.lt('CLOUD_COVER', 40))
             
-            def mask(img):
+            def prep_landsat(img):
                 qa = img.select('QA_PIXEL')
-                m = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 4).eq(0))
-                lst = img.select('ST_B10').multiply(0.00341802).add(149).subtract(273.15).multiply(1.8).add(32)
-                return lst.updateMask(m).rename('LST_F')
-            
-            # If collection is empty, return a blank image with the right band name
-            return ee.Image(ee.Algorithms.If(col.size().gt(0), col.map(mask).median(), ee.Image.constant(0).rename('LST_F')))
+                # Earth Engine .And() is required here
+                mask = qa.bitwiseAnd(1 << 3).eq(0).And(qa.bitwiseAnd(1 << 4).eq(0))
+                lst = img.select('ST_B10').multiply(0.00341802).add(149)\
+                         .subtract(273.15).multiply(1.8).add(32)
+                return lst.updateMask(mask).rename('LST_F')
 
-        landsat_stack = [ee.Image(get_ls(y)) for y in [2022, 2023, 2024]]
-        avg_lst_f = ee.ImageCollection(landsat_stack).mean().rename('AVG_LST_F')
-        
-        # Forecast calculation
-        pred_2026_f = avg_lst_f.add(sen_slope_f.resample('bilinear').multiply(4)).clip(geometry)
+            return col.map(prep_landsat).median()
 
-        # STATS Extraction with default values
-        stats_dict = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
-        slope_dict = sen_slope_f.reduceRegion(ee.Reducer.mean(), geometry, 1000).getInfo()
+        # Create a 3-year median baseline (2022-2024)
+        avg_lst_f = get_landsat_composite([2022, 2023, 2024]).rename('AVG_LST_F')
 
-        mean_v = stats_dict.get('AVG_LST_F', 0) if stats_dict else 0
-        slope_v = slope_dict.get('slope', 0) if slope_dict else 0
+        # ═════════════════════════════════════════════════════════════
+        # PREDICTION & STATISTICS
+        # ═════════════════════════════════════════════════════════════
+        # 2026 Forecast = Baseline + (Slope * 2 Years since 2024)
+        pred_2026_f = avg_lst_f.add(sen_slope_f.resample('bilinear').multiply(2)).clip(geometry)
+
+        # Extract numerical results for Streamlit Metrics
+        stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
+        slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), geometry, 1000).getInfo()
+
+        # Handle potential None values from GEE
+        mean_val = stats_raw.get('AVG_LST_F', 0) if stats_raw else 0
+        slope_val = slope_raw.get('slope', 0) if slope_raw else 0
 
         stats = {
-            "mean_temp_f": round(float(mean_v), 2),
-            "warming_trend": round(float(slope_v), 4),
-            "pred_2026_f": round(float(mean_v + (slope_v * 4)), 2)
+            "mean_temp_f": round(float(mean_val), 2),
+            "warming_trend": round(float(slope_val), 4),
+            "pred_2026_f": round(float(mean_val + (slope_val * 2)), 2)
         }
         
-        vis = {"min": 85, "max": 115, "palette": ['blue', 'yellow', 'red'], "region": geometry, "dimensions": 512}
-        return geometry, avg_lst_f, pred_2026_f, stats, pred_2026_f.getThumbURL(vis)
-    
+        # Visual parameters for the thumbnail
+        vis_params = {
+            "min": 85, "max": 115, 
+            "palette": ['blue', 'yellow', 'red'], 
+            "region": geometry, 
+            "dimensions": 512
+        }
+        
+        return geometry, avg_lst_f, pred_2026_f, stats, pred_2026_f.getThumbURL(vis_params)
+
     except Exception as e:
-        st.error(f"Critical Engine Error: {e}")
+        st.error(f"Engine Core Error: {e}")
         return None, None, None, None, None
