@@ -30,7 +30,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         geometry = point.buffer(15000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
-        # 1. MODIS TREND (22-Year)
+        # 1. MODIS TREND (22-Year Historical)
         years = ee.List.sequence(2003, 2025)
         def process_modis(y):
             y = ee.Number(y)
@@ -50,7 +50,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         else:
             sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
-        # 2. LANDSAT BASELINE (30m)
+        # 2. LANDSAT BASELINE (30m Resolution)
         ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(geometry).filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
             .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 40))
@@ -63,18 +63,23 @@ def get_gee_data(city_name: str, lon: float, lat: float):
 
         avg_lst_f = ls_col.map(prep_ls).median().clip(geometry)
         
-        # 3. FORECAST
+        # 3. FORECAST 2026
         slope_resampled = sen_slope_f.resample('bilinear').reproject(crs='EPSG:4326', scale=30)
         pred_2026_f = avg_lst_f.add(slope_resampled.multiply(2)).clip(geometry)
 
-        # 4. STATS & URLS
+        # 4. SERVER-SIDE VISUALIZATION (THE FIX)
+        vis_params = {"min": 85, "max": 115, "palette": ['0000FF', 'FFFF00', 'FF0000']}
+        
+        # This converts thermal numbers into colored RGB pixels
+        curr_visualized = avg_lst_f.visualize(**vis_params)
+        pred_visualized = pred_2026_f.visualize(**vis_params)
+
+        map_id_curr = ee.data.getMapId({'image': curr_visualized})
+        map_id_pred = ee.data.getMapId({'image': pred_visualized})
+
+        # Stats (Calculated from raw data)
         stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
         slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), regional_geo, 1000).getInfo()
-
-        vis = {"min": 85, "max": 115, "palette": ['0000FF', 'FFFF00', 'FF0000']}
-        
-        map_id_curr = ee.data.getMapId({'image': avg_lst_f, 'visParams': vis})
-        map_id_pred = ee.data.getMapId({'image': pred_2026_f, 'visParams': vis})
 
         return {
             "mean_temp_f": round(float(stats_raw.get('AVG_LST_F', 0) or 0), 2),
@@ -84,5 +89,5 @@ def get_gee_data(city_name: str, lon: float, lat: float):
             "forecast_url": map_id_pred['tile_fetcher'].url_format
         }
     except Exception as e:
-        st.error(f"Processing Error: {e}")
+        st.error(f"Engine Logic Error: {e}")
         return None
