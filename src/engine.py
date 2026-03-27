@@ -30,7 +30,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         geometry = point.buffer(15000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
-        # 1. MODIS TREND
+        # 1. MODIS TREND (22-Year)
         years = ee.List.sequence(2003, 2025)
         def process_modis(y):
             y = ee.Number(y)
@@ -50,7 +50,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         else:
             sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
-        # 2. LANDSAT BASELINE
+        # 2. LANDSAT BASELINE (30m)
         ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(geometry).filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
             .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 40))
@@ -83,7 +83,6 @@ def get_gee_data(city_name: str, lon: float, lat: float):
             "current_url": map_id_curr['tile_fetcher'].url_format,
             "forecast_url": map_id_pred['tile_fetcher'].url_format
         }
-
     except Exception as e:
-        st.error(f"Engine Syntax/Logic Error: {e}")
+        st.error(f"Processing Error: {e}")
         return None
