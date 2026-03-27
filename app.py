@@ -3,16 +3,16 @@ import leafmap.foliumap as leafmap
 import os
 import sys
 
-# PATH FIX
+# 1. DYNAMIC PATH FIX
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from src.engine import get_gee_data
 
-st.set_page_config(page_title="Heat Agent 2026", layout="wide", page_icon="🔥")
+st.set_page_config(page_title="Urban Heat Agent 2026", layout="wide", page_icon="🔥")
 
-# High-Contrast CSS
+# High-Contrast CSS for Metrics
 st.markdown("""
     <style>
     [data-testid="stMetric"] {
@@ -33,11 +33,11 @@ CITIES = {
     "Chicago, IL": {"lat": 41.8781, "lon": -87.6298}
 }
 
-st.sidebar.title("🏙️ Heat Agent v4.2")
-selected_city = st.sidebar.selectbox("Select City", list(CITIES.keys()))
+st.sidebar.title("🏙️ Heat Agent v4.3")
+selected_city = st.sidebar.selectbox("Select Target City", list(CITIES.keys()))
 coords = CITIES[selected_city]
 
-with st.spinner("Analyzing Thermal Stacks..."):
+with st.spinner("Analyzing satellite thermal stacks..."):
     stats = get_gee_data(selected_city, coords["lon"], coords["lat"])
 
 if stats:
@@ -52,10 +52,11 @@ if stats:
 
     st.markdown("---")
 
+    # The Map with pre-rendered tiles
     m = leafmap.Map(center=[coords["lat"], coords["lon"]], zoom=12)
     m.add_basemap("SATELLITE")
     
-    # FIX: Added 'attribution' argument to prevent TypeError
+    # Pre-colored tiles from GEE
     m.add_tile_layer(
         url=stats["current_url"], 
         name="2024 Baseline", 
@@ -69,6 +70,7 @@ if stats:
         opacity=0.7
     )
     
+    # Legend for UI reference
     m.add_colorbar(
         colors=['#0000ff', '#ffff00', '#ff0000'],
         vmin=85, vmax=115,
@@ -80,5 +82,7 @@ if stats:
     m.add_layer_control()
     m.to_streamlit(height=700, key=f"map_{selected_city.replace(' ', '')}")
 
+    st.info("💡 Pro-tip: Open the layer control icon in the top right to toggle between years.")
+
 else:
-    st.error("Engine failed. Check Streamlit logs for logic errors.")
+    st.error("Engine failed to synchronize. Please check Streamlit Secrets for GEE credentials.")
