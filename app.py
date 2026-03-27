@@ -3,14 +3,14 @@ import leafmap.foliumap as leafmap
 import os
 import sys
 
-# --- 1. DYNAMIC PATH FIX (Fixes ImportError on Cloud) ---
+# PATH FIX
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from src.engine import get_gee_data
 
-st.set_page_config(page_title="Heat Agent 2026", layout="wide")
+st.set_page_config(page_title="Heat Agent 2026", layout="wide", page_icon="🔥")
 
 # High-Contrast CSS
 st.markdown("""
@@ -33,7 +33,7 @@ CITIES = {
     "Chicago, IL": {"lat": 41.8781, "lon": -87.6298}
 }
 
-st.sidebar.title("🔥 Urban Heat Agent")
+st.sidebar.title("🏙️ Heat Agent v4.2")
 selected_city = st.sidebar.selectbox("Select City", list(CITIES.keys()))
 coords = CITIES[selected_city]
 
@@ -46,17 +46,28 @@ if stats:
     col1, col2, col3 = st.columns(3)
     col1.metric("Baseline Temp", f"{stats['mean_temp_f']}°F")
     col2.metric("Warming Trend", f"{stats['warming_trend']}°F/yr")
-    col3.metric("2026 Forecast", f"{stats['pred_2026_f']}°F")
+    
+    gain = round(stats['pred_2026_f'] - stats['mean_temp_f'], 2)
+    col3.metric("2026 Forecast", f"{stats['pred_2026_f']}°F", delta=f"{gain}°F")
 
     st.markdown("---")
 
-    # Map Rendering
     m = leafmap.Map(center=[coords["lat"], coords["lon"]], zoom=12)
     m.add_basemap("SATELLITE")
     
-    # Direct Tile Injection
-    m.add_tile_layer(url=stats["current_url"], name="2024 Baseline", opacity=0.6)
-    m.add_tile_layer(url=stats["forecast_url"], name="2026 Prediction", opacity=0.7)
+    # FIX: Added 'attribution' argument to prevent TypeError
+    m.add_tile_layer(
+        url=stats["current_url"], 
+        name="2024 Baseline", 
+        attribution="Google Earth Engine", 
+        opacity=0.6
+    )
+    m.add_tile_layer(
+        url=stats["forecast_url"], 
+        name="2026 Prediction", 
+        attribution="Google Earth Engine", 
+        opacity=0.7
+    )
     
     m.add_colorbar(
         colors=['#0000ff', '#ffff00', '#ff0000'],
@@ -70,4 +81,4 @@ if stats:
     m.to_streamlit(height=700, key=f"map_{selected_city.replace(' ', '')}")
 
 else:
-    st.error("Could not retrieve data. Check logs for details.")
+    st.error("Engine failed. Check Streamlit logs for logic errors.")
