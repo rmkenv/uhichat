@@ -20,16 +20,17 @@ def initialize_ee():
         project_id = st.secrets.get("GCP_PROJECT_ID") or sa_info.get("project_id")
         ee.Initialize(credentials=credentials, project=project_id)
     except Exception as e:
-        st.error(f"EE Auth Failed: {e}"); st.stop()
+        st.error(f"EE Auth Failed: {e}")
+        st.stop()
 
 def get_gee_data(city_name: str, lon: float, lat: float):
     initialize_ee()
     try:
         point = ee.Geometry.Point([lon, lat])
-        geometry = point.buffer(20000).bounds()
+        geometry = point.buffer(15000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
-        # --- 1. MODIS 22-YEAR TREND ---
+        # 1. MODIS TREND
         years = ee.List.sequence(2003, 2025)
         def process_modis(y):
             y = ee.Number(y)
@@ -49,10 +50,10 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         else:
             sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
-        # --- 2. LANDSAT 30m BASELINE ---
+        # 2. LANDSAT BASELINE
         ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(geometry).filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
-            .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 50))
+            .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 40))
             
         def prep_ls(img):
             qa = img.select('QA_PIXEL')
@@ -60,15 +61,29 @@ def get_gee_data(city_name: str, lon: float, lat: float):
             lst = img.select('ST_B10').multiply(0.00341802).add(149).subtract(273.15).multiply(1.8).add(32)
             return lst.updateMask(mask).rename('AVG_LST_F')
 
-        avg_lst_f = ls_col.map(prep_ls).median()
-        if avg_lst_f.bandNames().size().getInfo() == 0:
-            avg_lst_f = modis_annual.select('LST_Day_1km').mean().rename('AVG_LST_F').clip(geometry)
-
-        # --- 3. FORECAST & CLIPPING ---
+        avg_lst_f = ls_col.map(prep_ls).median().clip(geometry)
+        
+        # 3. FORECAST
         slope_resampled = sen_slope_f.resample('bilinear').reproject(crs='EPSG:4326', scale=30)
         pred_2026_f = avg_lst_f.add(slope_resampled.multiply(2)).clip(geometry)
-        current_layer = avg_lst_f.clip(geometry)
 
-        # Stats Extraction
-        stats_raw = current_layer.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
-        slope_raw
+        # 4. STATS & URLS
+        stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
+        slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), regional_geo, 1000).getInfo()
+
+        vis = {"min": 85, "max": 115, "palette": ['0000FF', 'FFFF00', 'FF0000']}
+        
+        map_id_curr = ee.data.getMapId({'image': avg_lst_f, 'visParams': vis})
+        map_id_pred = ee.data.getMapId({'image': pred_2026_f, 'visParams': vis})
+
+        return {
+            "mean_temp_f": round(float(stats_raw.get('AVG_LST_F', 0) or 0), 2),
+            "warming_trend": round(float(slope_raw.get('slope', 0) or 0), 4),
+            "pred_2026_f": round(float((stats_raw.get('AVG_LST_F', 0) or 0) + ((slope_raw.get('slope', 0) or 0) * 2)), 2),
+            "current_url": map_id_curr['tile_fetcher'].url_format,
+            "forecast_url": map_id_pred['tile_fetcher'].url_format
+        }
+
+    except Exception as e:
+        st.error(f"Engine Syntax/Logic Error: {e}")
+        return None
