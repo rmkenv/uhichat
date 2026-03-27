@@ -29,14 +29,13 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         geometry = point.buffer(20000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
-        # 1. TREND (MODIS 22-Year)
+        # --- 1. MODIS 22-YEAR TREND ---
         years = ee.List.sequence(2003, 2025)
         def process_modis(y):
             y = ee.Number(y)
-            start = ee.Date.fromYMD(y, 6, 1)
             img = ee.ImageCollection('MODIS/061/MYD11A2') \
                 .filterBounds(regional_geo) \
-                .filterDate(start, start.advance(4, 'month')) \
+                .filterDate(ee.Date.fromYMD(y, 6, 1), ee.Date.fromYMD(y, 9, 30)) \
                 .select('LST_Day_1km').mean()
             lst_f = img.multiply(0.02).subtract(273.15).multiply(1.8).add(32)
             year_band = ee.Image.constant(y.subtract(2013)).rename('year').toFloat()
@@ -50,7 +49,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         else:
             sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
-        # 2. BASELINE (Landsat 30m)
+        # --- 2. LANDSAT 30m BASELINE ---
         ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
             .filterBounds(geometry).filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
             .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 50))
@@ -65,15 +64,13 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         if avg_lst_f.bandNames().size().getInfo() == 0:
             avg_lst_f = modis_annual.select('LST_Day_1km').mean().rename('AVG_LST_F').clip(geometry)
 
-        # 3. FORECAST & VIS
+        # --- 3. FORECAST & VIS ---
         slope_resampled = sen_slope_f.resample('bilinear').reproject(crs='EPSG:4326', scale=30)
         pred_2026_f = avg_lst_f.add(slope_resampled.multiply(2)).clip(geometry)
 
-        # Numerical Stats
         stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
         slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), regional_geo, 1000).getInfo()
 
-        # Vis Config for both Map and Thumbnail
         vis_params = {"min": 80, "max": 120, "palette": ['#0000ff', '#ffff00', '#ff0000']}
 
         stats = {
