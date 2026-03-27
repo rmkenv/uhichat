@@ -28,7 +28,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # 4. SIDEBAR - TOP 25 CITIES DATA
-st.sidebar.title("🏙️ Heat Agent v5.0")
+st.sidebar.title("🏙️ Heat Agent v5.1")
 st.sidebar.markdown("[🔗 GitHub Repo](https://github.com/rmkenv/uhichat)")
 st.sidebar.markdown("---")
 
@@ -68,6 +68,17 @@ st.sidebar.subheader("Layer Opacity")
 base_op = st.sidebar.slider("2024 Baseline", 0.0, 1.0, 0.6, 0.05)
 pred_op = st.sidebar.slider("2026 Forecast", 0.0, 1.0, 0.7, 0.05)
 
+# Sidebar Methodology Snippet
+with st.sidebar.expander("📖 Methodology"):
+    st.write("""
+    **Data Sources:**
+    * **Landsat 8/9 (30m):** Used for street-level thermal baselines.
+    * **MODIS (1km):** 22-year daily stack used to calculate regional warming trends.
+    
+    **Calculation:**
+    The 2026 projection is derived by applying a pixel-level **Robust Linear Regression (Sen's Slope)** from 2003–2025 to the current high-resolution thermal baseline.
+    """)
+
 # 5. DATA PROCESSING
 with st.spinner(f"Analyzing {selected_city}..."):
     stats = get_gee_data(selected_city, coords["lon"], coords["lat"])
@@ -104,6 +115,25 @@ if stats:
     # Unique key ensures map re-renders when city OR opacity changes
     map_key = f"v5_map_{selected_city.replace(' ', '')}_{base_op}_{pred_op}"
     m.to_streamlit(height=700, key=map_key)
+
+    # 7. EXPANDED METHODOLOGY SECTION
+    st.markdown("---")
+    with st.expander("🔬 Detailed Scientific Methodology"):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("""
+            ### 1. Multi-Decadal Trend Analysis
+            We ingest the entire **MODIS (MYD11A2.061)** daytime Land Surface Temperature archive from 2003 to the present. 
+            By applying a **Sen's Slope** estimator, we filter out seasonal noise to find the true underlying warming trend per pixel.
+            """)
+        with col_b:
+            st.markdown("""
+            ### 2. High-Resolution Fusion
+            While MODIS provides the trend, its 1km resolution is too coarse for urban planning. We fuse this trend with **Landsat 8 & 9 (Collection 2 Level 2)** thermal data. 
+            This allows us to project heat risks at a **30-meter resolution**, identifying specific parking lots, rooftops, and parks.
+            """)
+        
+        st.latex(r"T_{2026} = T_{baseline} + (Slope_{2003-2025} \times 2)")
 
 else:
     st.error("Engine failed. Check GEE credentials or coordinate bounds.")
