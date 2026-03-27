@@ -1,8 +1,4 @@
-Here is the updated content for your `README.md` file. I have incorporated the top 25 cities update, the technical methodology for the 2026 forecast, and the live link to your Streamlit app.
 
-### `README.md`
-
-```markdown
 # 🌍 Gemini Climate Intelligence Agent (v2026)
 
 An AI-native geospatial application that combines **Google Earth Engine (GEE)** satellite analytics with multi-decadal climate modeling to forecast urban heat risks for the top 25 most populated US cities.
