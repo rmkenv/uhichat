@@ -64,7 +64,3 @@ Explore the interactive heat maps and 2026 forecasts here:
 **Developed for the [uhichat](https://github.com/rmkenv/uhichat) project.**
 ```
 
-### Final Deployment Checklist:
-1. **GitHub Sync:** Ensure your `app.py` and `src/engine.py` are pushed to the main branch.
-2. **Secrets:** Verify that `gee_service_account` is set in the Streamlit Cloud "Secrets" tab.
-3. **Init:** Double-check that `src/__init__.py` is present in your repository to avoid the `ModuleNotFoundError`.
