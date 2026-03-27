@@ -29,7 +29,7 @@ def get_gee_data(city_name: str, lon: float, lat: float):
         geometry = point.buffer(20000).bounds()
         regional_geo = point.buffer(50000).bounds()
 
-        # --- LAYER 1: MODIS 22-YEAR TREND ---
+        # 1. TREND (MODIS 22-Year)
         years = ee.List.sequence(2003, 2025)
         def process_modis(y):
             y = ee.Number(y)
@@ -38,26 +38,22 @@ def get_gee_data(city_name: str, lon: float, lat: float):
                 .filterBounds(regional_geo) \
                 .filterDate(start, start.advance(4, 'month')) \
                 .select('LST_Day_1km').mean()
-            
             lst_f = img.multiply(0.02).subtract(273.15).multiply(1.8).add(32)
             year_band = ee.Image.constant(y.subtract(2013)).rename('year').toFloat()
             return lst_f.addBands(year_band).set('has_data', img.bandNames().size().gt(0))
 
         modis_annual = ee.ImageCollection(years.map(process_modis)).filter(ee.Filter.eq('has_data', True))
-
+        
         if modis_annual.size().getInfo() > 5:
             sen_reg = modis_annual.select(['year', 'LST_Day_1km']).reduce(ee.Reducer.robustLinearRegression(1, 1))
             sen_slope_f = sen_reg.select('coefficients').arrayProject([0]).arrayFlatten([['slope']])
         else:
             sen_slope_f = ee.Image.constant(0.05).rename('slope')
 
-        # --- LAYER 2: LANDSAT 30m BASELINE ---
-        ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") \
-            .merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
-            .filterBounds(geometry) \
-            .filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
-            .filter(ee.Filter.calendarRange(6, 9, 'month')) \
-            .filter(ee.Filter.lt('CLOUD_COVER', 50))
+        # 2. BASELINE (Landsat 30m)
+        ls_col = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2").merge(ee.ImageCollection("LANDSAT/LC09/C02/T1_L2")) \
+            .filterBounds(geometry).filter(ee.Filter.calendarRange(2020, 2025, 'year')) \
+            .filter(ee.Filter.calendarRange(6, 9, 'month')).filter(ee.Filter.lt('CLOUD_COVER', 50))
             
         def prep_ls(img):
             qa = img.select('QA_PIXEL')
@@ -66,38 +62,32 @@ def get_gee_data(city_name: str, lon: float, lat: float):
             return lst.updateMask(mask).rename('AVG_LST_F')
 
         avg_lst_f = ls_col.map(prep_ls).median()
-
-        # BAND GUARD: Ensure we have data before math
         if avg_lst_f.bandNames().size().getInfo() == 0:
             avg_lst_f = modis_annual.select('LST_Day_1km').mean().rename('AVG_LST_F').clip(geometry)
-            st.warning(f"Using MODIS fallback for {city_name} baseline.")
 
-        # --- FINAL MATH & VIS ---
+        # 3. FORECAST & VIS
         slope_resampled = sen_slope_f.resample('bilinear').reproject(crs='EPSG:4326', scale=30)
         pred_2026_f = avg_lst_f.add(slope_resampled.multiply(2)).clip(geometry)
 
-        # Extraction
+        # Numerical Stats
         stats_raw = avg_lst_f.reduceRegion(ee.Reducer.mean(), geometry, 30).getInfo()
         slope_raw = sen_slope_f.reduceRegion(ee.Reducer.mean(), regional_geo, 1000).getInfo()
 
-        m_val = stats_raw.get('AVG_LST_F', 0) if stats_raw else 0
-        s_val = slope_raw.get('slope', 0) if slope_raw else 0
-
-        # Define consistent vis range for the colorbar
-        vis = {"min": 80, "max": 120, "palette": ['#0000ff', '#ffff00', '#ff0000']}
+        # Vis Config for both Map and Thumbnail
+        vis_params = {"min": 80, "max": 120, "palette": ['#0000ff', '#ffff00', '#ff0000']}
 
         stats = {
-            "mean_temp_f": round(float(m_val), 2),
-            "warming_trend": round(float(s_val), 4),
-            "pred_2026_f": round(float(m_val + (s_val * 2)), 2),
-            "vis_min": vis["min"],
-            "vis_max": vis["max"],
-            "palette": vis["palette"]
+            "mean_temp_f": round(float(stats_raw.get('AVG_LST_F', 0) if stats_raw else 0), 2),
+            "warming_trend": round(float(slope_raw.get('slope', 0) if slope_raw else 0), 4),
+            "pred_2026_f": round(float((stats_raw.get('AVG_LST_F', 0) if stats_raw else 0) + 
+                                       ((slope_raw.get('slope', 0) if slope_raw else 0) * 2)), 2),
+            "vis_min": vis_params["min"],
+            "vis_max": vis_params["max"],
+            "palette": vis_params["palette"]
         }
         
-        thumb = pred_2026_f.getThumbURL({**vis, "region": geometry, "dimensions": 512})
-        return geometry, avg_lst_f, pred_2026_f, stats, thumb
+        return geometry, avg_lst_f, pred_2026_f, stats
 
     except Exception as e:
         st.error(f"Engine Core Error: {e}")
-        return None, None, None, None, None
+        return None, None, None, None
