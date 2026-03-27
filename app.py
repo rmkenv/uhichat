@@ -3,7 +3,7 @@ import leafmap.foliumap as leafmap
 import sys
 import os
 
-# 1. PATH FIX: Ensures the app can see the 'src' folder
+# 1. PATH FIX: Ensures the app can find the 'src' folder
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.engine import get_gee_data
@@ -11,7 +11,7 @@ from src.engine import get_gee_data
 # 2. PAGE CONFIG
 st.set_page_config(page_title="Urban Heat Agent 2026", layout="wide", page_icon="🔥")
 
-# 3. HIGH-CONTRAST CSS: Fixes white-on-white text issues
+# 3. HIGH-CONTRAST CSS: Fixes readability for Metrics
 st.markdown("""
     <style>
     .main { background-color: #f8fafc; }
@@ -27,8 +27,10 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 4. SIDEBAR
-st.sidebar.title("🏙️ Heat Agent v2.2")
+# 4. SIDEBAR SETUP
+st.sidebar.title("🏙️ Heat Agent v3.0")
+st.sidebar.markdown("---")
+
 CITIES = {
     "Atlanta, GA": {"lat": 33.7490, "lon": -84.3880},
     "New York, NY": {"lat": 40.7128, "lon": -74.0060},
@@ -40,11 +42,9 @@ CITIES = {
 selected_city = st.sidebar.selectbox("Select Target City", list(CITIES.keys()))
 coords = CITIES[selected_city]
 
-# 5. DATA FETCHING
-with st.spinner(f"Requesting satellite tiles for {selected_city}..."):
-    geom, current_lst, forecast_2026, stats = get_gee_data(
-        selected_city, coords["lon"], coords["lat"]
-    )
+# 5. DATA FETCHING (Now receiving Tile URLs)
+with st.spinner(f"Fetching Tile URLs for {selected_city}..."):
+    geometry, stats = get_gee_data(selected_city, coords["lon"], coords["lat"])
 
 # 6. DASHBOARD MAIN UI
 if stats:
@@ -60,25 +60,28 @@ if stats:
 
     st.markdown("---")
 
-    # 7. THE MAP (The Fix for the Missing Layer)
-    st.subheader("Interactive Heat Mapping (30m Resolution)")
+    # 7. THE MAP (The URL-Injected Fix)
+    st.subheader("Interactive Heat Mapping (Direct Tile Injection)")
     
-    # Initialize Map with specific Google Satellite background
+    # Initialize Map
     m = leafmap.Map(center=[coords["lat"], coords["lon"]], zoom=12)
     m.add_basemap("SATELLITE")
     
-    # Force visibility with opacity: 1.0
-    vis = {
-        "min": stats["vis_min"], 
-        "max": stats["vis_max"], 
-        "palette": stats["palette"],
-        "opacity": 0.8  # Semi-transparent so you can see the streets underneath
-    }
+    # Inject the pre-signed Tile URLs directly
+    # This bypasses the Earth Engine Python-to-JS handshake
+    m.add_tile_layer(
+        url=stats["current_tile_url"], 
+        name="2024 Baseline (30m)", 
+        attribution="Google Earth Engine / NASA / USGS",
+        opacity=0.7
+    )
     
-    # Add layers to the map
-    # Note: Using .add_ee_layer is the standard for leafmap.foliumap
-    m.add_ee_layer(current_lst, vis, "2024 Baseline")
-    m.add_ee_layer(forecast_2026, vis, "2026 Prediction")
+    m.add_tile_layer(
+        url=stats["forecast_tile_url"], 
+        name="2026 Prediction (30m)", 
+        attribution="Google Earth Engine / NASA / USGS",
+        opacity=0.8
+    )
     
     # ADD THE COLORBAR (The Scale)
     m.add_colorbar(
@@ -90,14 +93,18 @@ if stats:
         position="bottomright"
     )
 
-    # Force the Layer Control to appear (so you can toggle UHI on/off manually)
+    # Force Layer Control so you can toggle between Baseline and Forecast
     m.add_layer_control()
     
-    # RENDER: Using a unique key for the city ensures the map refreshes correctly
-    m.to_streamlit(height=700, key=f"map_{selected_city.replace(',', '').replace(' ', '_')}")
+    # Render with unique city key
+    m.to_streamlit(height=700, key=f"v3_map_{selected_city.replace(' ', '_')}")
 
-    # 8. AI INSIGHTS BOTTOM BAR
-    st.info(f"**Methodology Note:** Thermal data is derived from Landsat 8/9 Collection 2 Level 2 (ST_B10) resampled with MODIS Aqua (MYD11A2) robust linear regression.")
+    # 8. AI INSIGHTS
+    st.markdown("### 🔍 Analysis Report")
+    if stats['warming_trend'] > 0.08:
+        st.error(f"**High Warming Rate:** {selected_city} is warming significantly faster than rural baselines.")
+    else:
+        st.success(f"**Stable Urban Growth:** {selected_city} shows standard thermal escalation patterns.")
 
 else:
-    st.error("Engine failed to synchronize with Earth Engine. Check your Service Account permissions.")
+    st.error("Engine failed to generate Tile URLs. Please check your GEE Service Account quotas.")
