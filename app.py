@@ -58,7 +58,22 @@ CITIES = {
     "Oklahoma City, OK": {"lat": 35.4676, "lon": -97.5164},
     "El Paso, TX": {"lat": 31.7619, "lon": -106.4850},
     "Boston, MA": {"lat": 42.3601, "lon": -71.0589},
-    "Portland, OR": {"lat": 45.5152, "lon": -122.6784}
+    "Portland, OR": {"lat": 45.5152, "lon": -122.6784}, 
+    # European Cities
+    "Berlin, Germany": {"lat": 52.5200, "lon": 13.4050},
+    "Paris, France": {"lat": 48.8566, "lon": 2.3522},
+    "London, England": {"lat": 51.5074, "lon": -0.1278},
+    "Malmö, Sweden": {"lat": 55.6050, "lon": 13.0038},
+    "Madrid, Spain": {"lat": 40.4168, "lon": -3.7038},
+    "Rome, Italy": {"lat": 41.9028, "lon": 12.4964},
+    "Amsterdam, Netherlands": {"lat": 52.3676, "lon": 4.9041},
+    "Vienna, Austria": {"lat": 48.2082, "lon": 16.3738},
+    "Barcelona, Spain": {"lat": 41.3851, "lon": 2.1734},
+    "Munich, Germany": {"lat": 48.1351, "lon": 11.5820},
+    "Brussels, Belgium": {"lat": 50.8503, "lon": 4.3517},
+    "Warsaw, Poland": {"lat": 52.2297, "lon": 21.0122},
+    "Budapest, Hungary": {"lat": 47.4979, "lon": 19.0402},
+    "Athens, Greece": {"lat": 37.9838, "lon": 23.7275}
 }
 
 selected_city = st.sidebar.selectbox("Select Target City", sorted(list(CITIES.keys())))
